@@ -1,1 +1,142 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>溢油应急响应与任务追踪</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#17212b}pre{background:#f4f7f9;padding:1rem;overflow:auto}button{padding:.55rem 1rem}</style></head><body><h1>溢油应急响应与任务追踪</h1><p>围控、回收、岸线保护和废弃物处置任务，按证据和监测结果闭环</p><p>估算油量、海况和未完成任务数影响响应等级；关闭前必须完成回收和岸线监测记录。</p><button onclick="loadItems()">刷新列表</button><pre id="out">使用X-Actor和X-Role请求头调用接口。</pre><script>async function loadItems(){const r=await fetch('/api/items',{headers:{'X-Actor':'demo','X-Role':'viewer'}});document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>溢油应急响应与岸线段台账</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:1080px;margin:1.5rem auto;padding:0 1rem;color:#17212b;background:#f7f9fb}
+h1{font-size:1.35rem}h2{font-size:1.1rem;margin-top:1.6rem;border-left:4px solid #2b6cb0;padding-left:.5rem}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:1rem;margin:.8rem 0}
+table{border-collapse:collapse;width:100%;font-size:.88rem;background:#fff}
+th,td{border:1px solid #e2e8f0;padding:.45rem .55rem;text-align:left;vertical-align:top}
+th{background:#edf2f7}
+button{padding:.4rem .8rem;margin:.15rem;border:1px solid #2b6cb0;background:#2b6cb0;color:#fff;border-radius:5px;cursor:pointer;font-size:.82rem}
+button.secondary{background:#718096;border-color:#718096}
+button.danger{background:#c53030;border-color:#c53030}
+button:disabled{opacity:.45;cursor:not-allowed}
+input,select,textarea{padding:.35rem;margin:.15rem;border:1px solid #cbd5e0;border-radius:4px;font-size:.85rem}
+label{font-size:.82rem;color:#4a5568}
+.tag{display:inline-block;padding:.1rem .5rem;border-radius:10px;font-size:.76rem;color:#fff}
+.s-low{background:#38a169}.s-moderate{background:#d69e2e}.s-high{background:#dd6b20}.s-critical{background:#c53030}
+.st-open{background:#718096}.st-claimed{background:#2b6cb0}.st-completed{background:#2f855a}.st-reinspection{background:#b7791f}.st-reoiled{background:#c53030}
+.muted{color:#718096;font-size:.8rem}.blocker{color:#c53030;font-weight:600}.ok{color:#2f855a;font-weight:600}
+pre{background:#1a202c;color:#e2e8f0;padding:.8rem;border-radius:6px;overflow:auto;font-size:.78rem;max-height:320px}
+.row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center}
+</style>
+</head>
+<body>
+<h1>溢油应急响应与岸线段台账</h1>
+<p class="muted">按事件登记岸线段与敏感等级；同一段同时只有一项未结束作业；完成记录实测油膜厚度与清理量，超阈值或资料不全转待复检；涨潮返油使原完成失效；仍有未完成/复油段时事件不能关闭。</p>
+
+<div class="card row">
+  <label>身份 <input id="actor" value="demo" size="8"></label>
+  <label>角色
+    <select id="role">
+      <option value="response_commander">响应指挥官（可复核/关闭）</option>
+      <option value="operations">作业队（领段/完成）</option>
+      <option value="observer" selected>观察员（登记/返油）</option>
+      <option value="viewer">查看者</option>
+    </select>
+  </label>
+  <button onclick="loadItems()">刷新</button>
+  <button class="secondary" onclick="loadAudit()">查看审计</button>
+</div>
+
+<div class="card">
+  <strong>新建事件</strong>
+  <div class="row">
+    <input id="i-title" placeholder="事件标题" size="14">
+    <select id="i-severity"><option value="minor">minor</option><option value="moderate">moderate</option><option value="major" selected>major</option><option value="catastrophic">catastrophic</option></select>
+    <input id="i-qty" type="number" placeholder="估算油量" value="10" size="6">
+    <input id="i-thr" type="number" placeholder="阈值" value="6" size="6">
+    <button onclick="createItem()">创建事件</button>
+  </div>
+</div>
+
+<div id="items"></div>
+<h2>审计链</h2>
+<pre id="audit">点击“查看审计”加载。</pre>
+
+<script>
+function headers(){return {'X-Actor':document.getElementById('actor').value||'demo','X-Role':document.getElementById('role').value,'Content-Type':'application/json'}}
+function api(path,opts){return fetch(path,Object.assign({headers:headers()},opts)).then(async r=>{const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.message||r.statusText);return j})}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+async function loadItems(){
+  const {items}=await api('/api/items');
+  document.getElementById('items').innerHTML=items.length?'': '<p class="muted">暂无事件</p>';
+  for(const it of items) document.getElementById('items').insertAdjacentHTML('beforeend',await renderItem(it));
+}
+async function renderItem(it){
+  const [{segments},blk]=await Promise.all([
+    api(`/api/items/${it.id}/segments`), api(`/api/items/${it.id}/blockers`)]);
+  const rows=segments.map(s=>`<tr>
+    <td>${esc(s.code)}<br><span class="muted">${esc(s.location)}</span></td>
+    <td><span class="tag s-${s.sensitivity}">${esc(s.sensitivity_label)}</span><br><span class="muted">阈值 ${s.film_threshold_um}μm</span></td>
+    <td><span class="tag st-${s.status}">${esc(s.status_label)}</span>
+      ${s.claimed_by?`<br><span class="muted">队伍：${esc(s.claimed_by)}</span>`:''}
+      ${s.film_thickness_um!=null?`<br><span class="muted">油膜 ${s.film_thickness_um}μm / 清理 ${esc(s.cleaned_quantity)}</span>`:''}
+      ${s.reinspection_reason?`<br><span class="muted">${esc(s.reinspection_reason)}</span>`:''}</td>
+    <td>${segmentActions(it,s)}</td></tr>`).join('');
+  return `<div class="card"><strong>#${it.id} ${esc(it.title)}</strong>
+    <span class="muted">[${it.status}] 优先级 ${it.priority}</span>
+    <p class="${blk.can_close?'ok':'blocker'}">${blk.can_close?'✓ 满足关闭条件':'⛔ 阻塞：'+esc(blk.blockers.join('；'))}</p>
+    <table><thead><tr><th>段编号/位置</th><th>敏感等级</th><th>清理状态</th><th>操作</th></tr></thead><tbody>${rows||'<tr><td colspan="4" class="muted">尚未登记岸线段</td></tr>'}</tbody></table>
+    <div class="row" style="margin-top:.6rem">
+      <input id="reg-${it.id}-code" placeholder="段编号 S-xx" size="10">
+      <input id="reg-${it.id}-loc" placeholder="位置描述" size="16">
+      <select id="reg-${it.id}-sen"><option value="low">低敏感</option><option value="moderate">中敏感</option><option value="high">高敏感</option><option value="critical">极敏感</option></select>
+      <button onclick="registerSeg(${it.id})">登记岸线段</button>
+    </div></div>`;
+}
+function segActionForm(id,s){
+  const v=s.version;
+  if(s.status==='open'||s.status==='reoiled')
+    return `<span class="muted">${s.status==='reoiled'?'返油后重新领取':''}</span><br><input id="c-${id}-team" placeholder="队伍名" size="9"><button onclick="claimSeg(${s.item_id},${id},${v})">领段占用</button>`;
+  if(s.status==='claimed')
+    return `<input id="f-${id}" type="number" placeholder="油膜μm" size="6"><input id="q-${id}" type="number" placeholder="清理量" size="6"><br><button onclick="completeSeg(${s.item_id},${id},${v})">完成（记录实测）</button>`;
+  if(s.status==='reinspection')
+    return `<button onclick="reviewSeg(${s.item_id},${id},true,${v})">复核通过</button><br><button class="danger" onclick="reviewSeg(${s.item_id},${id},false,${v})">复核退回</button>`;
+  if(s.status==='completed')
+    return `<input id="r-${id}" placeholder="返油说明" size="14"><br><button class="danger" onclick="reoilSeg(${s.item_id},${id},${v})">登记涨潮返油</button>`;
+  return '<span class="muted">—</span>';
+}
+function segmentActions(it,s){
+  if(it.status==='closed') return '<span class="muted">事件已关闭</span>';
+  return segActionForm(s.id,s);
+}
+
+async function createItem(){
+  const body={title:document.getElementById('i-title').value||'未命名事件',description:'页面创建',severity:document.getElementById('i-severity').value,
+    quantity:Number(document.getElementById('i-qty').value||0),threshold:Number(document.getElementById('i-thr').value||1)};
+  try{await api('/api/items',{method:'POST',body:JSON.stringify(body)});loadItems()}catch(e){alert(e.message)}
+}
+async function registerSeg(itemId){
+  const body={code:document.getElementById(`reg-${itemId}-code`).value,location:document.getElementById(`reg-${itemId}-loc`).value,
+    sensitivity:document.getElementById(`reg-${itemId}-sen`).value};
+  try{await api(`/api/items/${itemId}/segments`,{method:'POST',body:JSON.stringify(body)});loadItems()}catch(e){alert(e.message)}
+}
+async function claimSeg(itemId,id,v){
+  const team=document.getElementById(`c-${id}-team`).value;
+  try{await api(`/api/items/${itemId}/segments/${id}/claim`,{method:'POST',body:JSON.stringify({team,expected_version:v})});loadItems()}catch(e){alert(e.message)}
+}
+async function completeSeg(itemId,id,v){
+  const f=document.getElementById(`f-${id}`).value,q=document.getElementById(`q-${id}`).value;
+  const body={expected_version:v};if(f!=='')body.film_thickness_um=Number(f);if(q!=='')body.cleaned_quantity=Number(q);
+  try{await api(`/api/items/${itemId}/segments/${id}/complete`,{method:'POST',body:JSON.stringify(body)});loadItems()}catch(e){alert(e.message)}
+}
+async function reviewSeg(itemId,id,passed,v){
+  try{await api(`/api/items/${itemId}/segments/${id}/review`,{method:'POST',body:JSON.stringify({passed,note:passed?null:'复核未通过，重新清理',expected_version:v})});loadItems()}catch(e){alert(e.message)}
+}
+async function reoilSeg(itemId,id,v){
+  const note=document.getElementById(`r-${id}`).value||'涨潮后重新返油';
+  try{await api(`/api/items/${itemId}/segments/${id}/reoil`,{method:'POST',body:JSON.stringify({note,expected_version:v})});loadItems()}catch(e){alert(e.message)}
+}
+async function loadAudit(){
+  try{const {events}=await api('/api/audit');document.getElementById('audit').textContent=JSON.stringify(events,null,2)}catch(e){alert(e.message)}
+}
+loadItems().catch(e=>alert(e.message));
+</script>
+</body>
+</html>

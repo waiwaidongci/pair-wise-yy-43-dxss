@@ -4,7 +4,7 @@ import json
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from .domain import (ConflictError, DomainError, NotFoundError, PermissionDenied,
                      ValidationError)
@@ -73,6 +73,29 @@ def make_handler(service: Service, static_dir: str):
                 status = 500
             self._json(status, {"error": exc.__class__.__name__, "message": str(exc)})
 
+        @staticmethod
+        def _segment_route(path: str):
+            """解析 /api/items/{id}/segments[/{sid}[/{action}]] 形式的路径。"""
+            parts = [p for p in path.split("/") if p]
+            if len(parts) < 4 or parts[0] != "api" or parts[1] != "items" \
+                    or parts[3] != "segments":
+                return None
+            try:
+                item_id = int(parts[2])
+            except ValueError:
+                raise NotFoundError("路径无效")
+            if len(parts) == 4:
+                return item_id, None, None
+            try:
+                segment_id = int(parts[4])
+            except ValueError:
+                raise NotFoundError("路径无效")
+            action = parts[5] if len(parts) > 5 else None
+            if len(parts) > 6 or action not in (None, "claim", "complete",
+                                                "review", "reoil"):
+                raise NotFoundError("路径无效")
+            return item_id, segment_id, action
+
         def do_GET(self) -> None:
             try:
                 path = urlparse(self.path).path
@@ -89,6 +112,24 @@ def make_handler(service: Service, static_dir: str):
                     actor, role = self._identity()
                     del actor
                     self._json(200, {"records": service.list_records(item_id, role)})
+                elif path.startswith("/api/items/") and path.endswith("/blockers"):
+                    item_id = int(path.split("/")[3])
+                    actor, role = self._identity()
+                    del actor
+                    self._json(200, service.blockers(item_id, role))
+                elif path.startswith("/api/items/") and "/segments" in path:
+                    actor, role = self._identity()
+                    parsed = self._segment_route(path)
+                    if parsed is None:
+                        self._json(404, {"error": "not_found"})
+                        return
+                    item_id, segment_id, action = parsed
+                    if action is not None:
+                        self._json(404, {"error": "not_found"})
+                    elif segment_id is None:
+                        self._json(200, {"segments": service.list_segments(item_id, role)})
+                    else:
+                        self._json(200, service.get_segment(item_id, segment_id, role))
                 elif path.startswith("/api/items/"):
                     item_id = int(path.rsplit("/", 1)[-1])
                     actor, role = self._identity()
@@ -119,6 +160,32 @@ def make_handler(service: Service, static_dir: str):
                     expected = body.get("expected_version")
                     self._json(200, service.transition(
                         item_id, target, expected, actor, role))
+                elif path.startswith("/api/items/") and "/segments" in path:
+                    parsed = self._segment_route(path)
+                    if parsed is None:
+                        self._json(404, {"error": "not_found"})
+                        return
+                    item_id, segment_id, action = parsed
+                    if segment_id is None:
+                        if action is not None:
+                            self._json(404, {"error": "not_found"})
+                        else:
+                            self._json(201, service.register_segment(
+                                item_id, body, actor, role))
+                    elif action == "claim":
+                        self._json(200, service.claim_segment(
+                            item_id, segment_id, body, actor, role))
+                    elif action == "complete":
+                        self._json(200, service.complete_segment(
+                            item_id, segment_id, body, actor, role))
+                    elif action == "review":
+                        self._json(200, service.review_segment(
+                            item_id, segment_id, body, actor, role))
+                    elif action == "reoil":
+                        self._json(200, service.reoil_segment(
+                            item_id, segment_id, body, actor, role))
+                    else:
+                        self._json(404, {"error": "not_found"})
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:

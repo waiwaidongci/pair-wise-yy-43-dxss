@@ -11,6 +11,8 @@ class NotFoundError(DomainError): kind=ErrorKind.NOT_FOUND
 class PermissionDenied(DomainError): kind=ErrorKind.FORBIDDEN
 class ConflictError(DomainError): kind=ErrorKind.CONFLICT
 SEVERITIES=['minor', 'moderate', 'major', 'catastrophic']; STATES=['reported', 'assessing', 'containing', 'recovering', 'monitoring', 'closed']; ROLES=['observer', 'response_commander', 'operations', 'viewer']
+SEGMENT_SENSITIVITIES=['low', 'moderate', 'high', 'critical']
+SEGMENT_STATUSES=['open', 'claimed', 'completed', 'reinspection', 'reoiled']
 @dataclass(frozen=True)
 class Item:
     id:int; title:str; description:str; severity:str; quantity:float; threshold:float; status:str; version:int; external_ref:Optional[str]; created_by:str; created_at:str; updated_at:str
@@ -34,5 +36,11 @@ def require_number(value,field,minimum=0.0):
     except (TypeError,ValueError): raise ValidationError(f"{field}必须是数字")
     if number<minimum: raise ValidationError(f"{field}不能小于{minimum}")
     return number
+def optional_number(value,field,minimum=0.0):
+    if value is None or (isinstance(value,str) and not value.strip()): return None
+    return require_number(value,field,minimum)
+def normalize_segment_sensitivity(value):
+    if value not in SEGMENT_SENSITIVITIES: raise ValidationError("sensitivity不在允许范围内")
+    return value
 def ensure_role(role,allowed):
     if role not in allowed: raise PermissionDenied("当前角色无权执行该操作")
