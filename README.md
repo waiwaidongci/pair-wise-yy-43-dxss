@@ -30,9 +30,15 @@ python3 app.py --db ./data.db --port 8320
 - `GET /api/items/{id}`
 - `POST /api/items/{id}/records`
 - `POST /api/items/{id}/transition`，必须提交`expected_version`
+- `GET /api/items/{id}/segments`
+- `POST /api/items/{id}/segments`，按事件登记岸线段（段名、敏感等级）
+- `POST /api/items/{id}/segments/{seg_id}/claim`，领段占用；同一段已有未结束作业时返回 409
+- `POST /api/items/{id}/segments/{seg_id}/complete`，完成并记录实测油膜厚度与清理量；油膜超阈值或资料不全则转待复检
+- `POST /api/items/{id}/segments/{seg_id}/reinspect`，复核（pass/fail）
+- `POST /api/items/{id}/segments/{seg_id}/reoil`，返油重开，原完成失效
 - `GET /api/audit`
 
-允许角色：observer, response_commander, operations, viewer。估算油量、海况和未完成任务数影响响应等级；关闭前必须完成回收和岸线监测记录。
+允许角色：observer, response_commander, operations, viewer。估算油量、海况和未完成任务数影响响应等级；关闭前必须完成回收和岸线监测记录，且不存在未完成或复油岸线段。
 
 ## 测试
 

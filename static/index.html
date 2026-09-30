@@ -1,1 +1,141 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>溢油应急响应与任务追踪</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#17212b}pre{background:#f4f7f9;padding:1rem;overflow:auto}button{padding:.55rem 1rem}</style></head><body><h1>溢油应急响应与任务追踪</h1><p>围控、回收、岸线保护和废弃物处置任务，按证据和监测结果闭环</p><p>估算油量、海况和未完成任务数影响响应等级；关闭前必须完成回收和岸线监测记录。</p><button onclick="loadItems()">刷新列表</button><pre id="out">使用X-Actor和X-Role请求头调用接口。</pre><script>async function loadItems(){const r=await fetch('/api/items',{headers:{'X-Actor':'demo','X-Role':'viewer'}});document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>溢油应急响应与任务追踪</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#17212b}
+h1{margin-bottom:.25rem}
+.bar{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:1rem 0}
+input,select,button{padding:.45rem .6rem;font-size:.95rem}
+button{cursor:pointer;border:1px solid #b6c2cf;background:#fff;border-radius:4px}
+button.primary{background:#1f6feb;color:#fff;border-color:#1f6feb}
+button.danger{background:#cf222e;color:#fff;border-color:#cf222e}
+button.warn{background:#9a6700;color:#fff;border-color:#9a6700}
+.card{border:1px solid #d0d7de;border-radius:6px;padding:1rem;margin:1rem 0;background:#fff}
+.card h3{margin:.2rem 0}
+table{border-collapse:collapse;width:100%;margin-top:.5rem}
+th,td{border:1px solid #d0d7de;padding:.4rem .5rem;text-align:left;font-size:.9rem}
+th{background:#f4f7f9}
+.tag{display:inline-block;padding:.1rem .45rem;border-radius:10px;font-size:.8rem;color:#fff}
+.tag.open{background:#6e7781}.tag.occupied{background:#1f6feb}.tag.completed{background:#1a7f37}.tag.pending_recheck{background:#9a6700}.tag.reopened{background:#cf222e}
+.blockers{color:#cf222e;font-weight:600}
+.muted{color:#6e7781;font-size:.85rem}
+.seg-actions{display:flex;gap:.3rem;flex-wrap:wrap;align-items:center}
+.seg-actions input{width:5.5rem}
+</style>
+</head>
+<body>
+<h1>溢油应急响应与任务追踪</h1>
+<p>岸线段台账：领段占用、完成、复检与返油重开均留痕；仍有未完成或复油段时事件不能关闭。</p>
+<div class="bar">
+  <label>Actor <input id="actor" value="demo" style="width:7rem"></label>
+  <label>角色 <select id="role">
+    <option value="observer">observer</option>
+    <option value="response_commander" selected>response_commander</option>
+    <option value="operations">operations</option>
+    <option value="viewer">viewer</option>
+  </select></label>
+  <button class="primary" onclick="loadItems()">刷新列表</button>
+</div>
+<div id="out"><p class="muted">点击「刷新列表」加载事件与岸线段。</p></div>
+<script>
+const SENS_LABEL={high:'高敏感',medium:'中敏感',low:'低敏感'};
+const STATUS_LABEL={open:'待清理',occupied:'占用中',completed:'已完成',pending_recheck:'待复检',reopened:'复油重开'};
+function headers(){return {'Content-Type':'application/json','X-Actor':document.getElementById('actor').value,'X-Role':document.getElementById('role').value};}
+async function api(path,opts){const r=await fetch(path,Object.assign({headers:headers()},opts));const data=await r.json().catch(()=>({}));if(!r.ok){throw new Error(data.message||('HTTP '+r.status));}return data;}
+function statusTag(s){return '<span class="tag '+s+'">'+(STATUS_LABEL[s]||s)+'</span>';}
+
+async function loadItems(){
+  const out=document.getElementById('out');out.innerHTML='加载中…';
+  try{
+    const data=await api('/api/items');
+    if(!data.items.length){out.innerHTML='<p class="muted">暂无事件。</p>';return;}
+    out.innerHTML='';
+    for(const item of data.items){out.appendChild(renderItem(item));}
+  }catch(e){out.innerHTML='<p style="color:#cf222e">'+e.message+'</p>';}
+}
+
+function renderItem(item){
+  const div=document.createElement('div');div.className='card';
+  const sum=item.segment_summary||{};
+  const blockers=(item.blockers||[]);
+  div.innerHTML='<h3>#'+item.id+' '+item.title+'</h3>'+
+    '<p class="muted">状态 '+statusTag(item.status)+' · 严重度 '+item.severity+' · 优先级 '+(item.priority??'-')+' · 段数 '+(sum.total??0)+
+    '（待清理 '+(sum.open??0)+' · 占用中 '+(sum.occupied??0)+' · 待复检 '+(sum.pending_recheck??0)+' · 复油重开 '+(sum.reopened??0)+' · 已完成 '+(sum.completed??0)+'）</p>'+
+    (blockers.length?'<p class="blockers">关闭阻塞：'+blockers.join('；')+'</p>':'<p style="color:#1a7f37">可关闭：无阻塞</p>')+
+    '<div class="bar"><input id="segname-'+item.id+'" placeholder="段名，如 A段" style="width:9rem">'+
+    '<select id="segsens-'+item.id+'"><option value="high">高敏感</option><option value="medium">中敏感</option><option value="low">低敏感</option></select>'+
+    '<button onclick="registerSegment('+item.id+')">登记岸线段</button></div>'+
+    '<div id="segs-'+item.id+'"><p class="muted">加载中…</p></div>';
+  loadSegments(item.id);
+  return div;
+}
+
+async function loadSegments(itemId){
+  const el=document.getElementById('segs-'+itemId);
+  try{
+    const data=await api('/api/items/'+itemId+'/segments');
+    const segs=data.segments||[];
+    if(!segs.length){el.innerHTML='<p class="muted">暂无岸线段。</p>';return;}
+    let html='<table><thead><tr><th>段名</th><th>敏感等级</th><th>状态</th><th>油膜厚度</th><th>清理量</th><th>占用人</th><th>操作</th></tr></thead><tbody>';
+    for(const s of segs){
+      html+='<tr><td>'+s.name+'</td><td>'+(SENS_LABEL[s.sensitivity]||s.sensitivity)+'</td><td>'+statusTag(s.status)+'</td>'+
+        '<td>'+(s.oil_film_thickness??'-')+'</td><td>'+(s.cleanup_amount??'-')+'</td><td>'+(s.claimed_by??'-')+'</td><td class="seg-actions">'+segActions(itemId,s)+'</td></tr>';
+    }
+    html+='</tbody></table>';
+    el.innerHTML=html;
+  }catch(e){el.innerHTML='<p style="color:#cf222e">'+e.message+'</p>';}
+}
+
+function segActions(itemId,s){
+  let h='';
+  if(s.status==='open'||s.status==='reopened'){
+    h+='<button class="primary" onclick="claimSegment('+itemId+','+s.id+')">领段</button>';
+  }else if(s.status==='occupied'){
+    h+='<input id="th-'+s.id+'" placeholder="油膜厚度" type="number" step="0.1" min="0">'+
+       '<input id="ca-'+s.id+'" placeholder="清理量" type="number" step="0.1" min="0">'+
+       '<button class="primary" onclick="completeSegment('+itemId+','+s.id+')">完成</button>';
+  }else if(s.status==='pending_recheck'){
+    h+='<button class="primary" onclick="reinspectSegment('+itemId+','+s.id+',\'pass\')">复核通过</button>'+
+       '<button class="danger" onclick="reinspectSegment('+itemId+','+s.id+',\'fail\')">复核不通过</button>';
+  }else if(s.status==='completed'){
+    h+='<button class="warn" onclick="reoilSegment('+itemId+','+s.id+')">返油重开</button>';
+  }
+  return h||'<span class="muted">—</span>';
+}
+
+async function registerSegment(itemId){
+  const name=document.getElementById('segname-'+itemId).value.trim();
+  const sensitivity=document.getElementById('segsens-'+itemId).value;
+  if(!name){alert('请填写段名');return;}
+  try{await api('/api/items/'+itemId+'/segments',{method:'POST',body:JSON.stringify({name:name,sensitivity:sensitivity})});loadSegments(itemId);loadItems();}
+  catch(e){alert(e.message);}
+}
+async function claimSegment(itemId,segId){
+  try{await api('/api/items/'+itemId+'/segments/'+segId+'/claim',{method:'POST',body:'{}'});loadSegments(itemId);loadItems();}
+  catch(e){alert(e.message);}
+}
+async function completeSegment(itemId,segId){
+  const th=document.getElementById('th-'+segId).value;
+  const ca=document.getElementById('ca-'+segId).value;
+  const body={};
+  if(th!=='')body.oil_film_thickness=parseFloat(th);
+  if(ca!=='')body.cleanup_amount=parseFloat(ca);
+  try{await api('/api/items/'+itemId+'/segments/'+segId+'/complete',{method:'POST',body:JSON.stringify(body)});loadSegments(itemId);loadItems();}
+  catch(e){alert(e.message);}
+}
+async function reinspectSegment(itemId,segId,decision){
+  try{await api('/api/items/'+itemId+'/segments/'+segId+'/reinspect',{method:'POST',body:JSON.stringify({decision:decision})});loadSegments(itemId);loadItems();}
+  catch(e){alert(e.message);}
+}
+async function reoilSegment(itemId,segId){
+  const note=prompt('返油说明（可选）：','');
+  if(note===null)return;
+  try{await api('/api/items/'+itemId+'/segments/'+segId+'/reoil',{method:'POST',body:JSON.stringify({note:note})});loadSegments(itemId);loadItems();}
+  catch(e){alert(e.message);}
+}
+loadItems();
+</script>
+</body></html>

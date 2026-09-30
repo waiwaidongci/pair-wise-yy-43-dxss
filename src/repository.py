@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from .audit import make_entry, utc_now
 from .domain import ConflictError, NotFoundError
-from .rules import ID_PREFIX, STATES
+from .rules import ID_PREFIX, SEGMENT_STATUSES, STATES
 
 
 class Repository:
@@ -54,6 +54,26 @@ class Repository:
                     created_at TEXT NOT NULL,
                     UNIQUE(item_id, external_ref)
                 );
+                CREATE TABLE IF NOT EXISTS segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    sensitivity TEXT NOT NULL
+                        CHECK(sensitivity IN ('high','medium','low')),
+                    status TEXT NOT NULL DEFAULT 'open'
+                        CHECK(status IN ('open','occupied','completed','pending_recheck','reopened')),
+                    oil_film_thickness REAL,
+                    cleanup_amount REAL,
+                    claimed_by TEXT,
+                    claimed_at TEXT,
+                    external_ref TEXT,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(item_id, external_ref)
+                );
+                CREATE INDEX IF NOT EXISTS ix_segments_item_status
+                    ON segments(item_id, status);
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action TEXT NOT NULL,
@@ -153,6 +173,132 @@ class Repository:
         with self._lock:
             row = self.conn.execute(
                 "SELECT COUNT(*) AS n FROM records WHERE item_id=? AND status='open'",
+                (item_id,),
+            ).fetchone()
+        return int(row["n"])
+
+    def add_segment(self, item_id: int, name: str, sensitivity: str,
+                    external_ref: Optional[str], actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        self.get_item(item_id)
+        try:
+            with self._lock, self.conn:
+                cur = self.conn.execute(
+                    """INSERT INTO segments(item_id, name, sensitivity, status,
+                       oil_film_thickness, cleanup_amount, claimed_by, claimed_at,
+                       external_ref, created_by, created_at, updated_at)
+                       VALUES(?,?,?,?,NULL,NULL,NULL,NULL,?,?,?,?)""",
+                    (item_id, name, sensitivity, SEGMENT_STATUSES[0], external_ref,
+                     actor, now, now),
+                )
+                seg_id = int(cur.lastrowid)
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError("段唯一标识已存在") from exc
+        return self.get_segment(item_id, seg_id)
+
+    def get_segment(self, item_id: int, seg_id: int) -> Dict[str, Any]:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM segments WHERE id=? AND item_id=?", (seg_id, item_id)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("岸线段不存在")
+        return dict(row)
+
+    def list_segments(self, item_id: int) -> List[Dict[str, Any]]:
+        self.get_item(item_id)
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM segments WHERE item_id=? ORDER BY id", (item_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def claim_segment(self, item_id: int, seg_id: int, actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        self.get_segment(item_id, seg_id)
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE segments SET status='occupied', claimed_by=?, claimed_at=?,
+                   updated_at=? WHERE id=? AND item_id=?
+                   AND status IN ('open','reopened')""",
+                (actor, now, now, seg_id, item_id),
+            )
+            if cur.rowcount == 0:
+                raise ConflictError("该段已有未结束作业，不能重复领段")
+        return self.get_segment(item_id, seg_id)
+
+    def complete_segment(self, item_id: int, seg_id: int, target_status: str,
+                         thickness: Optional[float], cleanup_amount: Optional[float],
+                         actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        self.get_segment(item_id, seg_id)
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE segments SET status=?, oil_film_thickness=?, cleanup_amount=?,
+                   claimed_by=NULL, claimed_at=NULL, updated_at=?
+                   WHERE id=? AND item_id=? AND status='occupied'""",
+                (target_status, thickness, cleanup_amount, now, seg_id, item_id),
+            )
+            if cur.rowcount == 0:
+                raise ConflictError("仅占用中的段可完成清理")
+        return self.get_segment(item_id, seg_id)
+
+    def reinspect_segment(self, item_id: int, seg_id: int, decision: str,
+                          actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        self.get_segment(item_id, seg_id)
+        target_status = 'completed' if decision == 'pass' else 'open'
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE segments SET status=?, claimed_by=NULL, claimed_at=NULL,
+                   updated_at=? WHERE id=? AND item_id=? AND status='pending_recheck'""",
+                (target_status, now, seg_id, item_id),
+            )
+            if cur.rowcount == 0:
+                raise ConflictError("仅待复检段可复核")
+        return self.get_segment(item_id, seg_id)
+
+    def reoil_segment(self, item_id: int, seg_id: int, actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        self.get_segment(item_id, seg_id)
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE segments SET status='reopened', claimed_by=NULL, claimed_at=NULL,
+                   updated_at=? WHERE id=? AND item_id=?
+                   AND status IN ('completed','pending_recheck')""",
+                (now, seg_id, item_id),
+            )
+            if cur.rowcount == 0:
+                raise ConflictError("仅已完成或待复检段可登记返油重开")
+        return self.get_segment(item_id, seg_id)
+
+    def segment_summary(self, item_id: int) -> Dict[str, int]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT status, COUNT(*) AS n FROM segments WHERE item_id=? GROUP BY status",
+                (item_id,),
+            ).fetchall()
+        counts: Dict[str, int] = {s: 0 for s in SEGMENT_STATUSES}
+        total = 0
+        for row in rows:
+            counts[row["status"]] = int(row["n"])
+            total += int(row["n"])
+        counts["total"] = total
+        return counts
+
+    def count_unfinished_segments(self, item_id: int) -> int:
+        with self._lock:
+            row = self.conn.execute(
+                """SELECT COUNT(*) AS n FROM segments WHERE item_id=?
+                   AND status IN ('open','occupied','pending_recheck')""",
+                (item_id,),
+            ).fetchone()
+        return int(row["n"])
+
+    def count_reoiled_segments(self, item_id: int) -> int:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM segments WHERE item_id=? AND status='reopened'",
                 (item_id,),
             ).fetchone()
         return int(row["n"])
